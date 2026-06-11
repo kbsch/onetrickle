@@ -1,0 +1,17 @@
+# Compiled binaries
+/onetrickle
+/onetrickle.exe
+*.exe
+*.test
+*.out
+
+# Runtime data snapshots produced by `onetrickle seed` / the server
+/data/
+
+# Server runtime artifacts
+server.pid
+*.pid
+*.log
+
+# Local, machine-specific Claude Code settings (keep settings.json shared if added)
+.claude/settings.local.json
