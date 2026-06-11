@@ -1,5 +1,7 @@
 # onetrickle
 
+# (a Fable 5 oneshot test, not a serious repo)
+
 A OneStream CPM (Corporate Performance Management) clone in pure Go — single
 binary, stdlib only, no CGO, no CDN assets, JSON-file persistence. It does
 dimensional cubes, financial consolidation with FX translation and
