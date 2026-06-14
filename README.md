@@ -6,7 +6,7 @@ A CPM (Corporate Performance Management) clone in pure Go — single
 binary, stdlib only, no CGO, no CDN assets, JSON-file persistence. It does
 dimensional cubes, financial consolidation with FX translation and
 intercompany eliminations, a calculation DSL, staged CSV import with
-transformation rules, workflow tracking, and an embedded dark-theme web UI.
+transformation rules, workflow tracking, and an embedded web UI.
 
 ## Features
 

@@ -334,8 +334,9 @@ Hash-routed pages; `fetch` against the API; shared POV selector bar
 - **Formulas** — list/edit account formulas, dynamic flag, server-side parse
   validation feedback.
 
-Look: clean dark theme, system font stack, no frameworks, no CDN (must work
-offline).
+Look: clean light, near-monochrome theme (OneStream desktop style) — sharp
+corners, thin gray borders, white content, gray chrome, blue reserved for
+selection/focus. System font stack, no frameworks, no CDN (must work offline).
 
 ## 12. Package map & ownership
 
