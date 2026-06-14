@@ -41,7 +41,9 @@ go build -o onetrickle ./cmd/onetrickle
 ./onetrickle -data ./data -addr :8080 # serve API + UI
 ```
 
-Open <http://localhost:8080> in a browser.
+Open <http://localhost:8080> in a browser. To require a login, set
+`ONETRICKLE_AUTH_USER` and `ONETRICKLE_AUTH_PASS` first — they turn on
+single-user HTTP Basic Auth across the whole app (unset = open).
 
 ## The GolfTrickle demo tour
 
@@ -97,6 +99,13 @@ curl -s -X POST localhost:8080/api/process -H 'Content-Type: application/json' \
 ```
 
 Full endpoint table in [SPEC.md](SPEC.md) §10.
+
+## Deploy
+
+Run it on a VPS with TLS and a login in a few minutes: the binary serves on
+localhost behind Caddy (automatic HTTPS) or nginx, with single-user HTTP Basic
+Auth from an env file and a systemd unit. Configs and a step-by-step are in
+[deploy/](deploy/) — start with [deploy/DEPLOY.md](deploy/DEPLOY.md).
 
 ## Architecture
 

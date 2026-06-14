@@ -116,6 +116,11 @@ func runServe(path, addr string) error {
 		return fmt.Errorf("load snapshot: %w", err)
 	}
 	srv := server.New(st, path)
+	// Optional single-user HTTP Basic Auth via the environment. Both unset
+	// leaves the server open (suitable behind a trusted network or for local
+	// use); set both to require credentials on every route.
+	authUser, authPass := os.Getenv("ONETRICKLE_AUTH_USER"), os.Getenv("ONETRICKLE_AUTH_PASS")
+	srv.SetAuth(authUser, authPass)
 	httpSrv := &http.Server{Addr: addr, Handler: srv.Handler()}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -123,7 +128,11 @@ func runServe(path, addr string) error {
 
 	errCh := make(chan error, 1)
 	go func() { errCh <- httpSrv.ListenAndServe() }()
-	log.Printf("onetrickle listening on %s (data: %s)", addr, path)
+	authState := "off"
+	if authUser != "" || authPass != "" {
+		authState = "on (user " + authUser + ")"
+	}
+	log.Printf("onetrickle listening on %s (data: %s, basic-auth: %s)", addr, path, authState)
 
 	select {
 	case err := <-errCh:

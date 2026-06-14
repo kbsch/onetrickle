@@ -105,6 +105,67 @@ func TestHealth(t *testing.T) {
 	}
 }
 
+func TestBasicAuth(t *testing.T) {
+	// No credentials configured: the server stays open (default).
+	openH, _, _ := newTestServer(t)
+	if rec := doJSON(t, openH, http.MethodGet, "/api/health", nil); rec.Code != http.StatusOK {
+		t.Fatalf("open server health = %d, want 200", rec.Code)
+	}
+
+	// Credentials configured: every route requires them.
+	meta, cells, profiles, err := seed.Build()
+	if err != nil {
+		t.Fatalf("seed.Build: %v", err)
+	}
+	st := &store.AppState{Meta: meta, Cells: cells, Profiles: profiles, Workflow: workflow.NewRegistry()}
+	srv := New(st, filepath.Join(t.TempDir(), "onetrickle.json"))
+	srv.SetAuth("admin", "s3cret")
+	h := srv.Handler()
+
+	get := func(setAuth func(*http.Request)) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodGet, "/api/health", nil)
+		if setAuth != nil {
+			setAuth(req)
+		}
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		return rec
+	}
+
+	t.Run("missing credentials", func(t *testing.T) {
+		rec := get(nil)
+		if rec.Code != http.StatusUnauthorized {
+			t.Fatalf("no auth = %d, want 401", rec.Code)
+		}
+		if ch := rec.Header().Get("WWW-Authenticate"); !strings.Contains(ch, "Basic") {
+			t.Errorf("WWW-Authenticate = %q, want a Basic challenge", ch)
+		}
+	})
+	t.Run("wrong password", func(t *testing.T) {
+		if rec := get(func(r *http.Request) { r.SetBasicAuth("admin", "nope") }); rec.Code != http.StatusUnauthorized {
+			t.Errorf("wrong password = %d, want 401", rec.Code)
+		}
+	})
+	t.Run("wrong user", func(t *testing.T) {
+		if rec := get(func(r *http.Request) { r.SetBasicAuth("root", "s3cret") }); rec.Code != http.StatusUnauthorized {
+			t.Errorf("wrong user = %d, want 401", rec.Code)
+		}
+	})
+	t.Run("correct credentials", func(t *testing.T) {
+		if rec := get(func(r *http.Request) { r.SetBasicAuth("admin", "s3cret") }); rec.Code != http.StatusOK {
+			t.Errorf("correct creds = %d, want 200", rec.Code)
+		}
+	})
+	t.Run("UI route also protected", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if rec.Code != http.StatusUnauthorized {
+			t.Errorf("unauthenticated UI = %d, want 401", rec.Code)
+		}
+	})
+}
+
 func TestMetaShape(t *testing.T) {
 	h, _, _ := newTestServer(t)
 	rec := doJSON(t, h, http.MethodGet, "/api/meta", nil)

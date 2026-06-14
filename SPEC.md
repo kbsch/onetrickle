@@ -300,7 +300,12 @@ bundles `*model.Metadata`, `*cube.Store`, `map[string]*stage.Profile`,
 
 ## 10. REST API (`internal/server`)
 
-JSON; errors as `{"error": "..."}` with 4xx/5xx. No auth (self-hosted MVP).
+JSON; errors as `{"error": "..."}` with 4xx/5xx. Optional single-user HTTP
+Basic Auth guards every route (UI and API) when `ONETRICKLE_AUTH_USER` and
+`ONETRICKLE_AUTH_PASS` are set; unset (the default) leaves the server open.
+Credentials compare in constant time; a failed/missing login gets 401 with a
+`WWW-Authenticate: Basic` challenge. TLS is expected to terminate at a reverse
+proxy (see `deploy/`).
 
 | Method+Path | Body → Response |
 |---|---|

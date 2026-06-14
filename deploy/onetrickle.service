@@ -1,0 +1,39 @@
+# onetrickle systemd service.
+# Install to /etc/systemd/system/onetrickle.service — see deploy/DEPLOY.md.
+#
+# The app binds to localhost only; a reverse proxy (Caddy/nginx) terminates
+# TLS and forwards to it. Single-user HTTP Basic Auth comes from the
+# EnvironmentFile (ONETRICKLE_AUTH_USER / ONETRICKLE_AUTH_PASS).
+
+[Unit]
+Description=onetrickle CPM server
+Documentation=https://github.com/kbsch/onetrickle
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=onetrickle
+Group=onetrickle
+
+# Credentials and any other env. Required — the service will not start without
+# it, so you cannot accidentally deploy with auth unset. See onetrickle.env.example.
+EnvironmentFile=/etc/onetrickle/onetrickle.env
+
+ExecStart=/usr/local/bin/onetrickle -data /var/lib/onetrickle -addr 127.0.0.1:8080
+Restart=on-failure
+RestartSec=2
+
+# Hardening — the process only needs to read its binary and write its data dir.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/onetrickle
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6
+LockPersonality=yes
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,14 @@
+# onetrickle reverse proxy for Caddy (recommended — automatic HTTPS).
+# Install to /etc/caddy/Caddyfile, replace the domain, then: systemctl reload caddy
+#
+# Requirements: ports 80 and 443 open, and DNS A/AAAA records for the domain
+# pointing at this server. Caddy obtains and renews a Let's Encrypt certificate
+# on its own — no certbot needed.
+#
+# Login is handled by the app itself (HTTP Basic Auth from its env file), so
+# nothing auth-related is needed here.
+
+cpm.example.com {
+	encode zstd gzip
+	reverse_proxy 127.0.0.1:8080
+}

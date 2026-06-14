@@ -6,7 +6,10 @@
 package server
 
 import (
+	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -27,6 +30,8 @@ type Server struct {
 	state    *store.AppState
 	engine   *cube.Engine
 	dataPath string
+
+	authUser, authPass string // HTTP Basic Auth; empty disables auth
 }
 
 // New builds a server over state, persisting snapshots to dataPath. The cube
@@ -41,6 +46,13 @@ func New(state *store.AppState, dataPath string) *Server {
 		return expr.Eval(func(a string) (float64, error) { return getRef(a), nil })
 	}
 	return &Server{state: state, engine: eng, dataPath: dataPath}
+}
+
+// SetAuth enables HTTP Basic Auth on every route. When either user or pass is
+// non-empty, requests must present matching credentials; leaving both empty
+// (the default) serves the app unauthenticated.
+func (s *Server) SetAuth(user, pass string) {
+	s.authUser, s.authPass = user, pass
 }
 
 // Handler returns the full route table: the JSON API under /api/ and the
@@ -98,7 +110,37 @@ func (s *Server) Handler() http.Handler {
 		index(w, r)
 	})
 
-	return logMiddleware(mux)
+	return logMiddleware(s.basicAuth(mux))
+}
+
+// basicAuth gates every route behind HTTP Basic Auth when credentials are
+// configured (SetAuth); with none set it passes requests straight through.
+// Credentials are compared in constant time so a wrong username and a wrong
+// password are indistinguishable by timing.
+func (s *Server) basicAuth(next http.Handler) http.Handler {
+	if s.authUser == "" && s.authPass == "" {
+		return next
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		u, p, ok := r.BasicAuth()
+		// Check both fields regardless of the first result (no short-circuit).
+		valid := credEqual(u, s.authUser)
+		valid = credEqual(p, s.authPass) && valid
+		if !ok || !valid {
+			w.Header().Set("WWW-Authenticate", `Basic realm="onetrickle", charset="UTF-8"`)
+			writeError(w, http.StatusUnauthorized, errors.New("authentication required"))
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// credEqual reports whether got equals want in constant time. Hashing first
+// makes the comparison independent of the (secret) length.
+func credEqual(got, want string) bool {
+	g := sha256.Sum256([]byte(got))
+	w := sha256.Sum256([]byte(want))
+	return subtle.ConstantTimeCompare(g[:], w[:]) == 1
 }
 
 // saveLocked persists the current state snapshot. The caller must hold the
