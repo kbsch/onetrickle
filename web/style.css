@@ -220,6 +220,13 @@ textarea {
 
 .control-group { display: flex; flex-direction: column; gap: 4px; }
 
+/* Quick View axis builder: a stacked list of nesting levels. */
+.levels { display: flex; flex-direction: column; gap: 6px; margin-bottom: 6px; }
+.level { display: flex; gap: 6px; align-items: center; }
+.level select, .level input { min-width: 0; }
+.level-btns { display: flex; gap: 4px; }
+.level-btns .btn { padding: 4px 8px; line-height: 1; }
+
 .cols { display: flex; gap: 18px; align-items: flex-start; }
 .cols > * { flex: 1; min-width: 0; }
 
@@ -272,6 +279,12 @@ table.grid { border-collapse: collapse; min-width: 320px; background: #fff; }
 .grid td.issues-cell { color: var(--bad); font-size: 12px; white-space: normal; max-width: 360px; }
 .grid.compact th, .grid.compact td { padding: 5px 10px; }
 .grid td.actions .btn { margin-right: 6px; }
+
+/* Pivot grid: nested row/column headers merged with rowspan/colspan. */
+.grid.pivot thead th.group { text-align: center; }
+.grid.pivot thead th.corner { background: var(--chrome); border-right: 1px solid var(--border-2); }
+.grid.pivot th.rowhead { vertical-align: top; border-right: 1px solid var(--border); }
+.grid.pivot th.rowhead.group { background: var(--panel-2); color: #44474d; }
 
 /* ------------------------------------------------------------------ chips */
 

@@ -27,8 +27,9 @@ transformation rules, workflow tracking, and an embedded web UI.
   → Imported → Validated → Processed → Certified, with append-only history.
   Certified units reject writes and imports.
 - **REST API + embedded SPA** — vanilla-JS, hash-routed, works offline;
-  Dashboard, Quick View grid (editable cells), Workflow board, Metadata
-  editor, FX Rates, Import, Formulas pages.
+  Dashboard, Quick View pivot grid (multiple dimensions per axis, nested
+  headers, editable cells), Workflow board, Metadata editor, FX Rates, Import,
+  Formulas pages.
 - **Persistence** — one atomic, byte-deterministic JSON snapshot
   (`<datadir>/onetrickle.json`).
 
@@ -55,11 +56,13 @@ Processed. Three things to try:
 1. **Quick View** — set rows to Account / NetIncome / tree and cols to Time /
    2025Q1 / leaves with entity GolfTrickle Inc, stage Consolidated. You'll see
    group-currency consolidated numbers with the IC Sales/COGS elimination
-   already netted out. To see the −200-style elimination entries, switch Stage
-   to Elimination and set rows to Account / Sales (or COGS) — eliminations
-   post to the IC accounts, which sit outside the NetIncome tree. Then switch
-   the entity to Canada, stage to Local and Origin to Forms, and double-click
-   a leaf cell to edit it.
+   already netted out. Add a second row dimension (Entity / GolfTrickle Inc /
+   children) above Account to pivot accounts within each subsidiary — the
+   nested headers merge with rowspan. To see the −200-style elimination
+   entries, switch Stage to Elimination and set rows to Account / Sales (or
+   COGS) — eliminations post to the IC accounts, which sit outside the
+   NetIncome tree. Then switch the entity to Canada, stage to Local and Origin
+   to Forms, and double-click a leaf cell to edit it.
 2. **Workflow** — every leaf unit ships Processed. Pick any leaf entity (e.g.
    Canada / Actual / 2025M4), **certify** it, then try writing to it from
    Quick View and watch the server refuse the write (409); **reopen** it to
@@ -80,6 +83,14 @@ curl -s -X POST localhost:8080/api/query -H 'Content-Type: application/json' -d 
   "pov":{"scenario":"Actual","time":"2025M1","stage":"Consolidated","entity":"GolfTrickle Inc"},
   "rows":[{"dim":"Account","member":"NetIncome","expand":"tree"}],
   "cols":[{"dim":"Time","member":"2025Q1","expand":"leaves"}]}'
+
+# Nested pivot: rows = Entity(children) × Account(tree); cross product via rowNest.
+curl -s -X POST localhost:8080/api/query -H 'Content-Type: application/json' -d '{
+  "cube":"GolfTrickle",
+  "pov":{"scenario":"Actual","time":"2025M1","stage":"Consolidated"},
+  "rowNest":[[{"dim":"Entity","member":"GolfTrickle Inc","expand":"children"}],
+             [{"dim":"Account","member":"NetIncome","expand":"tree"}]],
+  "cols":[{"dim":"Time","member":"2025M1","expand":"member"}]}'
 
 curl -s -X POST localhost:8080/api/process -H 'Content-Type: application/json' \
   -d '{"cube":"GolfTrickle","scenario":"Actual","time":"2025M4"}'

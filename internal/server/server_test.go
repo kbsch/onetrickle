@@ -264,6 +264,47 @@ func TestQueryConsolidated(t *testing.T) {
 	}
 }
 
+func TestQueryNestedPivot(t *testing.T) {
+	h, _, _ := newTestServer(t)
+	base := cube.POV{Cube: "GolfTrickle", Scenario: "Actual", Time: "2025M1", Stage: "Local"}
+
+	// Rows = Entity[US Operations, Europe] (outer) × Account[Sales, GrossProfit]
+	// (inner); Cols = a single flat Time level.
+	req := cube.QueryRequest{
+		Cube: "GolfTrickle", POV: base,
+		RowNest: [][]cube.AxisSpec{
+			{{Dim: "Entity", Member: "US Operations"}, {Dim: "Entity", Member: "Europe"}},
+			{{Dim: "Account", Member: "Sales"}, {Dim: "Account", Member: "GrossProfit"}},
+		},
+		Cols: []cube.AxisSpec{{Dim: "Time", Member: "2025M1"}},
+	}
+	rec := doJSON(t, h, http.MethodPost, "/api/query", req)
+	wantStatus(t, rec, http.StatusOK)
+	res := decodeBody[cube.QueryResult](t, rec)
+
+	if len(res.RowPaths) != 4 || res.ColPaths != nil {
+		t.Fatalf("paths: rows=%+v cols=%+v, want 4 row tuples and nil cols", res.RowPaths, res.ColPaths)
+	}
+	want := []struct{ entity, account string }{
+		{"US Operations", "Sales"}, {"US Operations", "GrossProfit"},
+		{"Europe", "Sales"}, {"Europe", "GrossProfit"},
+	}
+	for i, w := range want {
+		p := res.RowPaths[i]
+		if len(p) != 2 || p[0].Name != w.entity || p[1].Name != w.account ||
+			p[0].Dim != "Entity" || p[1].Dim != "Account" {
+			t.Fatalf("row path %d = %+v, want %s / %s", i, p, w.entity, w.account)
+		}
+		// Each pivot cell must equal the equivalent single-cell query.
+		pov := base
+		pov.Entity = w.entity
+		exp := querySingle(t, h, pov, w.account)
+		if !approx(res.Cells[i][0], exp) {
+			t.Errorf("cell[%d][0] = %v, want %v (%s/%s)", i, res.Cells[i][0], exp, w.entity, w.account)
+		}
+	}
+}
+
 func TestDataCellsWriteRead(t *testing.T) {
 	h, _, path := newTestServer(t)
 	unit := cube.UnitKey{Cube: "GolfTrickle", Entity: "US Operations", Scenario: "Actual", Time: "2025M8"}

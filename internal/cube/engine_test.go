@@ -534,6 +534,136 @@ func TestQueryLeavesAndConcatenation(t *testing.T) {
 	}
 }
 
+// pathEq compares a header tuple against want as (dim,name,depth,isLeaf).
+func pathEq(got []HeaderPart, want []HeaderPart) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	for i := range got {
+		if got[i] != want[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func TestQueryNestedAxes(t *testing.T) {
+	meta := newTestMeta(t)
+	e := newTestEngine()
+
+	// Nested rows: Entity[US,DE] (outer) crossed with Account[Sales,Cash]
+	// (inner), against a flat single-column Time axis. Cols stay flat, so
+	// ColPaths must remain nil while RowPaths carries the 2-level tuple.
+	t.Run("nested rows, flat cols", func(t *testing.T) {
+		res, err := e.Query(meta, QueryRequest{
+			Cube: "Main",
+			POV:  POV{Scenario: "Actual", Stage: string(model.StageLocal)},
+			RowNest: [][]AxisSpec{
+				{{Dim: "Entity", Member: "US"}, {Dim: "Entity", Member: "DE"}},
+				{{Dim: "Account", Member: "Sales"}, {Dim: "Account", Member: "Cash"}},
+			},
+			Cols: []AxisSpec{{Dim: "Time", Member: "2025M1"}},
+		})
+		if err != nil {
+			t.Fatalf("Query: %v", err)
+		}
+		// Innermost headers are the Account level.
+		wantHead := []string{"Sales", "Cash", "Sales", "Cash"}
+		if len(res.RowHeaders) != len(wantHead) {
+			t.Fatalf("row headers = %+v, want innermost %v", res.RowHeaders, wantHead)
+		}
+		for i, n := range wantHead {
+			if res.RowHeaders[i].Name != n {
+				t.Errorf("row header %d = %q, want %q", i, res.RowHeaders[i].Name, n)
+			}
+		}
+		wantPaths := [][]HeaderPart{
+			{{Dim: "Entity", Name: "US", IsLeaf: true}, {Dim: "Account", Name: "Sales", IsLeaf: true}},
+			{{Dim: "Entity", Name: "US", IsLeaf: true}, {Dim: "Account", Name: "Cash", IsLeaf: true}},
+			{{Dim: "Entity", Name: "DE", IsLeaf: true}, {Dim: "Account", Name: "Sales", IsLeaf: true}},
+			{{Dim: "Entity", Name: "DE", IsLeaf: true}, {Dim: "Account", Name: "Cash", IsLeaf: true}},
+		}
+		if len(res.RowPaths) != len(wantPaths) {
+			t.Fatalf("row paths = %+v, want %+v", res.RowPaths, wantPaths)
+		}
+		for i := range wantPaths {
+			if !pathEq(res.RowPaths[i], wantPaths[i]) {
+				t.Errorf("row path %d = %+v, want %+v", i, res.RowPaths[i], wantPaths[i])
+			}
+		}
+		if res.ColPaths != nil {
+			t.Errorf("flat cols should have nil ColPaths, got %+v", res.ColPaths)
+		}
+		wantCells := []float64{1250, 500, 400, 300} // US/Sales, US/Cash, DE/Sales, DE/Cash
+		for i, w := range wantCells {
+			if !approxEq(res.Cells[i][0], w) {
+				t.Errorf("cell[%d][0] = %v, want %v", i, res.Cells[i][0], w)
+			}
+		}
+	})
+
+	// Nested rows AND nested cols: Time[M1,M2] crossed with Stage[Local].
+	t.Run("nested rows and cols", func(t *testing.T) {
+		res, err := e.Query(meta, QueryRequest{
+			Cube: "Main",
+			POV:  POV{Scenario: "Actual"},
+			RowNest: [][]AxisSpec{
+				{{Dim: "Entity", Member: "US"}, {Dim: "Entity", Member: "DE"}},
+				{{Dim: "Account", Member: "Sales"}, {Dim: "Account", Member: "Cash"}},
+			},
+			ColNest: [][]AxisSpec{
+				{{Dim: "Time", Member: "2025M1"}, {Dim: "Time", Member: "2025M2"}},
+				{{Dim: "Stage", Member: string(model.StageLocal)}},
+			},
+		})
+		if err != nil {
+			t.Fatalf("Query: %v", err)
+		}
+		wantCol := [][]HeaderPart{
+			{{Dim: "Time", Name: "2025M1", IsLeaf: true}, {Dim: "Stage", Name: "Local", IsLeaf: true}},
+			{{Dim: "Time", Name: "2025M2", IsLeaf: true}, {Dim: "Stage", Name: "Local", IsLeaf: true}},
+		}
+		if len(res.ColPaths) != len(wantCol) {
+			t.Fatalf("col paths = %+v, want %+v", res.ColPaths, wantCol)
+		}
+		for j := range wantCol {
+			if !pathEq(res.ColPaths[j], wantCol[j]) {
+				t.Errorf("col path %d = %+v, want %+v", j, res.ColPaths[j], wantCol[j])
+			}
+		}
+		// Rows: US/Sales, US/Cash, DE/Sales, DE/Cash; Cols: M1 Local, M2 Local.
+		wantCells := [][]float64{
+			{1250, 1100}, // US Sales
+			{500, 600},   // US Cash
+			{400, 0},     // DE Sales (no DE M2 data)
+			{300, 0},     // DE Cash
+		}
+		for i := range wantCells {
+			for j := range wantCells[i] {
+				if !approxEq(res.Cells[i][j], wantCells[i][j]) {
+					t.Errorf("cell[%d][%d] = %v, want %v", i, j, res.Cells[i][j], wantCells[i][j])
+				}
+			}
+		}
+	})
+
+	// A flat (single-level) axis must not emit paths — backward compatibility.
+	t.Run("flat axis emits no paths", func(t *testing.T) {
+		res, err := e.Query(meta, QueryRequest{
+			Cube: "Main",
+			POV:  POV{Entity: "US", Scenario: "Actual", Stage: string(model.StageLocal)},
+			Rows: []AxisSpec{{Dim: "Account", Member: "NetIncome", Expand: ExpandTree}},
+			Cols: []AxisSpec{{Dim: "Time", Member: "2025M1"}},
+		})
+		if err != nil {
+			t.Fatalf("Query: %v", err)
+		}
+		if res.RowPaths != nil || res.ColPaths != nil {
+			t.Errorf("flat axes should emit nil paths, got rows=%+v cols=%+v", res.RowPaths, res.ColPaths)
+		}
+	})
+}
+
 func TestQueryViewAndStageAxes(t *testing.T) {
 	meta := newTestMeta(t)
 	e := newTestEngine()

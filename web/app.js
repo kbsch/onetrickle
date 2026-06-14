@@ -178,7 +178,6 @@ function buildPOVBar() {
     state.pov = { cube: cube.value, scenario: scen.value, time: time.value };
     savePOV();
     gridState.norm = null; // grid results are POV-stale now
-    gridState.lastReq = null;
     renderRoute();
   };
   cube.onchange = onChange;
@@ -252,6 +251,8 @@ function normQueryResult(r) {
     cols: r.colHeaders ?? r.ColHeaders ?? [],
     cells: r.cells ?? r.Cells ?? [],
     issues: (r.issues ?? r.Issues ?? []).map(String),
+    rowPaths: normPaths(r.rowPaths ?? r.RowPaths),
+    colPaths: normPaths(r.colPaths ?? r.ColPaths),
   };
 }
 const hName = (h) => String((h && (h.name ?? h.Name)) ?? '');
@@ -260,28 +261,78 @@ const hIsLeaf = (h) => {
   const v = h && (h.isLeaf ?? h.IsLeaf);
   return v !== false;
 };
+const hDim = (h) => String((h && (h.dim ?? h.Dim)) ?? '');
+// normPaths normalizes nested header tuples; null when the axis is flat.
+const normPaths = (pp) =>
+  Array.isArray(pp) && pp.length
+    ? pp.map((tuple) => (tuple || []).map((p) =>
+        ({ dim: hDim(p), name: hName(p), depth: hDepth(p), isLeaf: hIsLeaf(p) })))
+    : null;
 
-// Shared grid renderer: indented row headers, bold parents, right-aligned numbers.
-function resultTable(norm, onDblClick) {
-  const head = el('tr', {}, el('th', { class: 'corner' }, ''));
-  for (const ch of norm.cols) head.append(el('th', { class: 'num' }, hName(ch)));
+// effPaths normalizes an axis into per-position header tuples (outer→inner).
+// A nested axis arrives as paths from the engine; a flat axis is synthesized
+// from its single-level headers so the renderer/editor share one shape.
+function effPaths(headers, paths, dims) {
+  if (paths && paths.length) return paths;
+  const dim = (dims && dims[0]) || '';
+  return headers.map((h) => [{ dim, name: hName(h), depth: hDepth(h), isLeaf: hIsLeaf(h) }]);
+}
+
+// pivotTable renders a (possibly nested) grid: row-header tuples merge with
+// rowspan, column-header tuples with colspan, so repeated outer members span
+// their inner groups — a classic pivot layout. rowEff/colEff are effPaths().
+function pivotTable(norm, rowEff, colEff, onDblClick) {
+  const nrows = norm.rows.length, ncols = norm.cols.length;
+  const rowLevels = rowEff.length ? rowEff[0].length : 1;
+  const colLevels = colEff.length ? colEff[0].length : 1;
+  const pad = (depth) => `padding-left:${depth * 16 + 10}px`;
+  // Group key for a position at nesting level li: every level 0..li must match.
+  const key = (path, li) => path.slice(0, li + 1).map((p) => p.name).join('');
+
+  const thead = el('thead');
+  for (let li = 0; li < colLevels; li++) {
+    const tr = el('tr', {});
+    if (li === 0) tr.append(el('th', { class: 'corner', colspan: rowLevels, rowspan: colLevels }, ''));
+    for (let c = 0; c < ncols;) {
+      const k = key(colEff[c], li);
+      let span = 1;
+      while (c + span < ncols && key(colEff[c + span], li) === k) span++;
+      const part = colEff[c][li];
+      // Innermost column level aligns over the numbers; outer levels center
+      // across the columns they span.
+      tr.append(el('th', {
+        class: 'colhead ' + (li === colLevels - 1 ? 'num' : 'group') + (part.isLeaf ? '' : ' parent'),
+        colspan: span, style: pad(part.depth),
+      }, part.name));
+      c += span;
+    }
+    thead.append(tr);
+  }
+
   const tbody = el('tbody');
-  norm.rows.forEach((rh, r) => {
-    const parent = !hIsLeaf(rh);
-    const tr = el('tr', {},
-      el('th', {
-        class: 'rowhead' + (parent ? ' parent' : ''),
-        style: `padding-left:${hDepth(rh) * 16 + 10}px`,
-      }, hName(rh)));
-    norm.cols.forEach((_, c) => {
+  for (let r = 0; r < nrows; r++) {
+    const tr = el('tr', {});
+    for (let li = 0; li < rowLevels; li++) {
+      if (r > 0 && key(rowEff[r], li) === key(rowEff[r - 1], li)) continue; // covered by a rowspan above
+      let span = 1;
+      while (r + span < nrows && key(rowEff[r + span], li) === key(rowEff[r], li)) span++;
+      const part = rowEff[r][li];
+      tr.append(el('th', {
+        class: 'rowhead' + (li === rowLevels - 1 ? '' : ' group') + (part.isLeaf ? '' : ' parent'),
+        rowspan: span, style: pad(part.depth),
+      }, part.name));
+    }
+    const rowParent = !rowEff[r][rowLevels - 1].isLeaf;
+    for (let c = 0; c < ncols; c++) {
+      const colParent = !colEff[c][colLevels - 1].isLeaf;
       tr.append(el('td', {
-        class: 'num' + (parent ? ' parent' : ''),
+        class: 'num' + (rowParent || colParent ? ' parent' : ''),
         ondblclick: onDblClick ? () => onDblClick(r, c) : null,
       }, fmtNum((norm.cells[r] || [])[c])));
-    });
+    }
     tbody.append(tr);
-  });
-  return el('table', { class: 'grid' }, el('thead', {}, head), tbody);
+  }
+  return el('table', { class: 'grid pivot' }, thead, tbody);
 }
 
 /* --------------------------------------------------------------- workflow */
@@ -496,29 +547,41 @@ const EXPANDS = ['member', 'children', 'leaves', 'tree'];
 const AXIS_DIMS = ['Account', 'Entity', 'Time', 'Scenario', 'Flow', 'Origin', 'UD1', 'UD2', 'UD3', 'UD4'];
 const USER_ORIGINS = ['Import', 'Forms', 'Adj'];
 
+// rows/cols are ordered lists of nesting levels (outer→inner); each level is
+// one dimension slice {dim, member, expand}. A single-level axis renders flat;
+// two or more levels render as a nested pivot.
 const gridState = {
-  row: { dim: 'Account', member: '', expand: 'tree' },
-  col: { dim: 'Time', member: '', expand: 'member' },
+  rows: [{ dim: 'Account', member: '', expand: 'tree' }],
+  cols: [{ dim: 'Time', member: '', expand: 'member' }],
   view: 'Periodic',
   stage: 'Consolidated',
   origin: '',
   entity: '',
   account: '',
-  lastReq: null,
   norm: null,
-  resolved: { entity: '', account: '' },
+  resolved: { entity: '', account: '', rowDims: [], colDims: [] },
+  rowEff: [],
+  colEff: [],
 };
 
 async function buildQueryRequest() {
   const { cube, scenario, time } = state.pov;
   const entity = gridState.entity || (await firstRoot('Entity'));
   const account = gridState.account || (await firstRoot('Account'));
-  gridState.resolved = { entity, account };
-  const axis = async (ax) => ({
+  const resolveLevel = async (ax) => ({
     dim: ax.dim,
     member: ax.member.trim() || (ax.dim === 'Time' ? time : await firstRoot(ax.dim)),
     expand: ax.expand,
   });
+  const rows = [];
+  for (const ax of gridState.rows) rows.push(await resolveLevel(ax));
+  const cols = [];
+  for (const ax of gridState.cols) cols.push(await resolveLevel(ax));
+  gridState.resolved = {
+    entity, account,
+    rowDims: rows.map((s) => s.dim),
+    colDims: cols.map((s) => s.dim),
+  };
   return {
     cube,
     pov: {
@@ -526,8 +589,10 @@ async function buildQueryRequest() {
       view: gridState.view, stage: gridState.stage,
       origin: gridState.origin, account,
     },
-    rows: [await axis(gridState.row)],
-    cols: [await axis(gridState.col)],
+    // Each level is sent as its own one-spec nesting level; the engine crosses
+    // them. A single level yields a flat axis (no paths returned).
+    rowNest: rows.map((s) => [s]),
+    colNest: cols.map((s) => [s]),
   };
 }
 
@@ -535,7 +600,6 @@ async function runQuery(resultBox) {
   resultBox.replaceChildren(loading('Running query…'));
   try {
     const req = await buildQueryRequest();
-    gridState.lastReq = req;
     const res = await api('/api/query', { method: 'POST', body: req });
     gridState.norm = normQueryResult(res);
     drawGridResult(resultBox);
@@ -547,10 +611,11 @@ async function runQuery(resultBox) {
 }
 
 // editableOrigin: cells may be edited only against a specific user origin —
-// either the grid's Origin filter or an Origin member on an axis.
+// either the grid's Origin filter or an Origin member on any axis level.
 function editableOriginActive() {
   return USER_ORIGINS.includes(gridState.origin) ||
-    gridState.row.dim === 'Origin' || gridState.col.dim === 'Origin';
+    gridState.rows.some((a) => a.dim === 'Origin') ||
+    gridState.cols.some((a) => a.dim === 'Origin');
 }
 
 function drawGridResult(resultBox) {
@@ -563,13 +628,16 @@ function drawGridResult(resultBox) {
     resultBox.replaceChildren(emptyState('The query returned no rows or columns.'));
     return;
   }
+  // Effective header tuples drive both the pivot render and cell editing.
+  gridState.rowEff = effPaths(n.rows, n.rowPaths, gridState.resolved.rowDims);
+  gridState.colEff = effPaths(n.cols, n.colPaths, gridState.resolved.colDims);
   let hint;
   if (gridState.stage !== 'Local') {
     hint = 'Switch Stage to Local to edit cells.';
   } else if (!editableOriginActive()) {
     hint = 'To edit cells, set Origin to Import, Forms or Adj (the aggregated view is read-only).';
   } else {
-    hint = 'Double-click a cell to enter a value (replaces the value at that origin).';
+    hint = 'Double-click a leaf cell to enter a value (replaces the value at that origin).';
   }
   const parts = [el('div', { class: 'hint muted' }, hint)];
   if (n.issues && n.issues.length) {
@@ -578,7 +646,7 @@ function drawGridResult(resultBox) {
       el('ul', { class: 'issues' }, n.issues.map((i) => el('li', {}, i)))));
   }
   parts.push(el('div', { class: 'panel table-wrap' },
-    resultTable(n, (r, c) => editGridCell(r, c, resultBox))));
+    pivotTable(n, gridState.rowEff, gridState.colEff, (r, c) => editGridCell(r, c, resultBox))));
   resultBox.replaceChildren(...parts);
 }
 
@@ -606,14 +674,22 @@ async function editGridCell(r, c, resultBox) {
   const n = gridState.norm;
   if (!n) return;
   const { cube, scenario, time } = state.pov;
+  const rowTuple = gridState.rowEff[r] || [];
+  const colTuple = gridState.colEff[c] || [];
+  // Only fully-leaf cells are writable; any parent member on the axes means
+  // this cell is an aggregate of several stored cells.
+  if (![...rowTuple, ...colTuple].every((p) => p.isLeaf)) {
+    toast('That cell aggregates several members — drill to leaf members on every axis to edit.', 'info');
+    return;
+  }
   const unit = { cube, entity: gridState.resolved.entity, scenario, time };
   const coord = {
     account: gridState.resolved.account,
     flow: '', origin: gridState.origin, ic: '',
     ud1: '', ud2: '', ud3: '', ud4: '',
   };
-  overlayMember(gridState.row.dim, hName(n.rows[r]), unit, coord);
-  overlayMember(gridState.col.dim, hName(n.cols[c]), unit, coord);
+  for (const p of rowTuple) overlayMember(p.dim, p.name, unit, coord);
+  for (const p of colTuple) overlayMember(p.dim, p.name, unit, coord);
   // Replace-what-you-see semantics: edits are only allowed against a specific
   // user origin, so the displayed value is the one being replaced. No silent
   // origin coercion (a write at another origin would ADD to the shown sum).
@@ -680,28 +756,67 @@ async function exportCSV() {
 }
 
 async function renderGrid(view) {
-  const [rowMembers, colMembers, entities, accounts] = await Promise.all([
-    dimMembers(gridState.row.dim),
-    dimMembers(gridState.col.dim),
-    dimMembers('Entity'),
-    dimMembers('Account'),
-  ]);
+  // Prefetch members for every dimension referenced by an axis level (for the
+  // member datalists) plus Entity/Account (for the POV filters).
+  const axisDims = [...new Set([...gridState.rows, ...gridState.cols].map((a) => a.dim))];
+  const membersByDim = {};
+  await Promise.all([...new Set([...axisDims, 'Entity', 'Account'])].map((d) =>
+    dimMembers(d).then((ms) => { membersByDim[d] = ms; }).catch(() => { membersByDim[d] = []; })));
+  const entities = membersByDim.Entity || [];
+  const accounts = membersByDim.Account || [];
+  const onAxis = new Set(axisDims);
   const resultBox = el('div', { class: 'result-box' });
 
-  const axisControls = (label, ax, members, dlId) =>
-    el('div', { class: 'control-group' },
-      el('span', { class: 'section-label' }, label),
-      el('div', { class: 'hrow' },
-        selectEl({
-          onchange: (e) => { ax.dim = e.target.value; ax.member = ''; renderRoute(); },
-          title: 'Dimension',
-        }, AXIS_DIMS, ax.dim),
-        el('input', {
-          list: dlId, value: ax.member, placeholder: 'member (default: top)',
-          oninput: (e) => { ax.member = e.target.value; },
-        }),
-        el('datalist', { id: dlId }, members.map((m) => el('option', { value: m.name }))),
-        selectEl({ onchange: (e) => { ax.expand = e.target.value; }, title: 'Expand' }, EXPANDS, ax.expand)));
+  // One nesting level: dimension · member · expand · reorder/remove. Outer
+  // levels sit above inner ones; the rendered axis is their cross product.
+  const levelRow = (levels, i, dlPrefix) => {
+    const ax = levels[i];
+    const dlId = `${dlPrefix}-${i}`;
+    const members = membersByDim[ax.dim] || [];
+    return el('div', { class: 'level' },
+      selectEl({
+        onchange: (e) => { ax.dim = e.target.value; ax.member = ''; renderRoute(); },
+        title: 'Dimension',
+      }, AXIS_DIMS, ax.dim),
+      el('input', {
+        list: dlId, value: ax.member, placeholder: 'member (default: top)',
+        oninput: (e) => { ax.member = e.target.value; },
+      }),
+      el('datalist', { id: dlId }, members.map((m) => el('option', { value: m.name }))),
+      selectEl({ onchange: (e) => { ax.expand = e.target.value; }, title: 'Expand' }, EXPANDS, ax.expand),
+      el('div', { class: 'level-btns' },
+        el('button', {
+          class: 'btn small', title: 'Move outward', disabled: i === 0,
+          onclick: () => { [levels[i - 1], levels[i]] = [levels[i], levels[i - 1]]; renderRoute(); },
+        }, '↑'),
+        el('button', {
+          class: 'btn small', title: 'Move inward', disabled: i === levels.length - 1,
+          onclick: () => { [levels[i + 1], levels[i]] = [levels[i], levels[i + 1]]; renderRoute(); },
+        }, '↓'),
+        el('button', {
+          class: 'btn small danger', title: 'Remove dimension', disabled: levels.length === 1,
+          onclick: () => { levels.splice(i, 1); renderRoute(); },
+        }, '✕')));
+  };
+
+  const axisControls = (label, levels, dlPrefix) => {
+    const used = new Set(levels.map((a) => a.dim));
+    const nextDim = AXIS_DIMS.find((d) => !used.has(d)) || AXIS_DIMS[0];
+    return el('div', { class: 'control-group' },
+      el('span', { class: 'section-label' }, `${label} — outer → inner`),
+      el('div', { class: 'levels' }, levels.map((_, i) => levelRow(levels, i, dlPrefix))),
+      el('button', {
+        class: 'btn small', disabled: levels.length >= AXIS_DIMS.length,
+        onclick: () => { levels.push({ dim: nextDim, member: '', expand: 'member' }); renderRoute(); },
+      }, '+ Add dimension'));
+  };
+
+  // A POV member filter is disabled when its dimension is on an axis (the axis
+  // member overrides it cell-by-cell).
+  const povMemberFilter = (dim, list, key) =>
+    frow(onAxis.has(dim) ? `${dim} (on axis)` : dim,
+      selectEl({ disabled: onAxis.has(dim), onchange: (e) => { gridState[key] = e.target.value; } },
+        [['', '(top)']].concat(list.map((m) => m.name)), gridState[key]));
 
   const povControls = el('div', { class: 'control-group' },
     el('span', { class: 'section-label' }, 'POV'),
@@ -711,10 +826,8 @@ async function renderGrid(view) {
         ['Local', 'Translated', 'Elimination', 'Consolidated'], gridState.stage)),
       frow('Origin', selectEl({ onchange: (e) => { gridState.origin = e.target.value; } },
         [['', '(all)'], 'Import', 'Forms', 'Adj', 'Calc', 'Elim'], gridState.origin)),
-      frow('Entity', selectEl({ onchange: (e) => { gridState.entity = e.target.value; } },
-        [['', '(top)']].concat(entities.map((m) => m.name)), gridState.entity)),
-      frow('Account', selectEl({ onchange: (e) => { gridState.account = e.target.value; } },
-        [['', '(top)']].concat(accounts.map((m) => m.name)), gridState.account))));
+      povMemberFilter('Entity', entities, 'entity'),
+      povMemberFilter('Account', accounts, 'account')));
 
   const buttons = el('div', { class: 'control-group buttons' },
     el('span', { class: 'section-label' }, 'Actions'),
@@ -725,8 +838,8 @@ async function renderGrid(view) {
   view.replaceChildren(el('div', { class: 'page wide' },
     el('h1', {}, 'Quick View'),
     el('div', { class: 'panel controls' },
-      axisControls('Rows', gridState.row, rowMembers, 'dl-row-members'),
-      axisControls('Columns', gridState.col, colMembers, 'dl-col-members'),
+      axisControls('Rows', gridState.rows, 'dl-row'),
+      axisControls('Columns', gridState.cols, 'dl-col'),
       povControls,
       buttons),
     resultBox));

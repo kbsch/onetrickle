@@ -131,17 +131,33 @@ over all partners (IC="None" matches only the None partner).
 
 ```go
 type AxisSpec struct { Dim string; Member string; Expand string } // Expand: member|children|leaves|tree
-type QueryRequest struct { Cube string; POV POV; Rows []AxisSpec; Cols []AxisSpec }
+type HeaderPart struct { Dim, Name string; Depth int; IsLeaf bool } // one nesting level of a tuple
+type QueryRequest struct {
+    Cube string; POV POV
+    Rows, Cols       []AxisSpec   // single flat level (specs concatenate)
+    RowNest, ColNest [][]AxisSpec // nesting levels (outer→inner); override Rows/Cols
+}
 type QueryResult struct {
-    RowHeaders []HeaderCell // {Name, Depth, IsLeaf}
+    RowHeaders []HeaderCell   // {Name, Depth, IsLeaf}; innermost level of each position
     ColHeaders []HeaderCell
-    Cells      [][]float64  // [row][col]
-    Issues     []string     // dynamic-calc problems (deduplicated, never nil)
+    Cells      [][]float64    // [row][col]
+    Issues     []string       // dynamic-calc problems (deduplicated, never nil)
+    RowPaths   [][]HeaderPart // per-position tuples; set only for a nested axis (>1 level)
+    ColPaths   [][]HeaderPart
 }
 ```
 
-Multiple AxisSpecs on an axis concatenate. `tree` = member followed by all
-descendants, Depth = distance from the spec member (for indentation).
+An axis is a list of **nesting levels** (outer→inner); the rendered axis is the
+**cross product** of the levels, and each level is a set of stacked AxisSpecs
+that **concatenate**. `Rows`/`Cols` give a single (flat) level — the legacy
+shape; `RowNest`/`ColNest`, when non-empty, give the full nested form and take
+precedence. A nested cell overlays every level's member (outer first) onto the
+POV, so e.g. rows `Entity × Account` yields one row per (entity, account) pair.
+`tree` = member followed by all descendants, Depth = distance from the spec
+member (for indentation). `RowPaths`/`ColPaths` carry the per-position tuple and
+are populated only when an axis has more than one level; the flat
+`RowHeaders`/`ColHeaders` always hold the innermost level. Backward compatible:
+a single-level axis behaves exactly as before and emits no paths.
 
 ## 5. Consolidation (`internal/consol`)
 
@@ -297,7 +313,7 @@ JSON; errors as `{"error": "..."}` with 4xx/5xx. No auth (self-hosted MVP).
 | GET `/api/rates?scenario=S&time=T` | `[{currency,type,value}]` |
 | PUT `/api/rates?scenario=S&time=T` | same shape in |
 | POST `/api/data/cells` | `[{unit:{cube,entity,scenario,time}, coord:{account,...}, value}]` — rejects certified units, formula accounts (stored or dynamic) and non-finite values |
-| POST `/api/query` | QueryRequest → QueryResult (§4, incl. `issues`) |
+| POST `/api/query` | QueryRequest → QueryResult (§4, incl. `issues`; `rowNest`/`colNest` for nested pivots → `rowPaths`/`colPaths`) |
 | GET `/api/export?cube=&scenario=&time=&stage=` | CSV of non-zero consolidated leaf cells |
 | GET/POST `/api/profiles`, PUT/DELETE `/api/profiles/{name}` | import profiles |
 | POST `/api/import/preview` | multipart `file` + `profile` → TransformResult (first 200 rows) + issues. Uploads are capped (20 MB body / 200k rows → 413) |
@@ -321,12 +337,15 @@ Hash-routed pages; `fetch` against the API; shared POV selector bar
   default Sales/GrossProfit/NetIncome/GPMargin at top entity,
   Consolidated/YTD) + workflow completion summary. The default POV time is
   the server's `latestDataTime` hint so a fresh load shows numbers.
-- **Quick View** — the grid: pick row dim+member+expand, col dim+member+expand,
-  POV for the rest; renders QueryResult with indentation (query `issues`
-  listed above the grid); cells editable only when the full POV is leaf-level
-  Local input at a specific user origin (Import/Forms/Adj — replace-what-you-
-  see; formula accounts are read-only). Writes via /api/data/cells, then
-  re-query. Export CSV button.
+- **Quick View** — the pivot grid: each axis (rows, columns) is a list of
+  dimension levels you add/remove/reorder (dim+member+expand per level); the
+  grid renders their cross product with nested headers merged via
+  rowspan/colspan. POV supplies the rest (a POV member filter is disabled when
+  its dimension is on an axis). Renders QueryResult with indentation (query
+  `issues` listed above the grid); cells editable only when the full POV is
+  leaf-level Local input at a specific user origin (Import/Forms/Adj — replace-
+  what-you-see; aggregated/parent cells and formula accounts are read-only).
+  Writes via /api/data/cells, then re-query. Export CSV button.
 - **Workflow** — entity × status board with action buttons per the state
   machine (illegal actions disabled); "process" shows returned Issues.
 - **Metadata** — dimension picker + member tree; add/edit/delete members and

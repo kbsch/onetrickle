@@ -328,8 +328,19 @@ func descendWeights(d *model.Dimension, name string, acc float64, w map[string]f
 }
 
 // HeaderCell is one rendered row/column header. Depth is the distance from
-// the AxisSpec member (for indentation in tree expansions).
+// the AxisSpec member (for indentation in tree expansions). For a nested axis
+// it describes the innermost (most specific) level of its position; the full
+// tuple is carried alongside in QueryResult.RowPaths / ColPaths.
 type HeaderCell struct {
+	Name   string `json:"name"`
+	Depth  int    `json:"depth"`
+	IsLeaf bool   `json:"isLeaf"`
+}
+
+// HeaderPart is one nesting level of a pivot header tuple: the member rendered
+// at that level plus the dimension it overlays. Outer→inner order.
+type HeaderPart struct {
+	Dim    string `json:"dim"`
 	Name   string `json:"name"`
 	Depth  int    `json:"depth"`
 	IsLeaf bool   `json:"isLeaf"`
@@ -343,24 +354,34 @@ type AxisSpec struct {
 	Expand string `json:"expand"`
 }
 
-// QueryRequest renders a grid: each axis is the concatenation of its
-// expanded specs; every other coordinate comes from POV.
+// QueryRequest renders a grid. An axis is a list of nesting levels (outer→
+// inner): the rendered axis is the cross product of the levels, and each
+// level is itself a set of stacked AxisSpecs (concatenated). Rows/Cols give a
+// single level (the legacy flat axis); RowNest/ColNest, when non-empty, give
+// the full nested form and take precedence. Every coordinate not on an axis
+// comes from POV.
 type QueryRequest struct {
-	Cube string     `json:"cube"`
-	POV  POV        `json:"pov"`
-	Rows []AxisSpec `json:"rows"`
-	Cols []AxisSpec `json:"cols"`
+	Cube    string       `json:"cube"`
+	POV     POV          `json:"pov"`
+	Rows    []AxisSpec   `json:"rows"`
+	Cols    []AxisSpec   `json:"cols"`
+	RowNest [][]AxisSpec `json:"rowNest,omitempty"`
+	ColNest [][]AxisSpec `json:"colNest,omitempty"`
 }
 
 // QueryResult is the rendered grid; Cells is indexed [row][col]. Issues
 // carries dynamic-calc problems recorded during resolution (formula cycles,
 // depth-limit hits, evaluation errors), deduplicated; never nil so it
-// serializes as [].
+// serializes as []. RowPaths/ColPaths carry the per-position header tuple and
+// are populated only for a nested axis (more than one level); the flat
+// RowHeaders/ColHeaders always hold the innermost level.
 type QueryResult struct {
-	RowHeaders []HeaderCell `json:"rowHeaders"`
-	ColHeaders []HeaderCell `json:"colHeaders"`
-	Cells      [][]float64  `json:"cells"`
-	Issues     []string     `json:"issues"`
+	RowHeaders []HeaderCell   `json:"rowHeaders"`
+	ColHeaders []HeaderCell   `json:"colHeaders"`
+	Cells      [][]float64    `json:"cells"`
+	Issues     []string       `json:"issues"`
+	RowPaths   [][]HeaderPart `json:"rowPaths,omitempty"`
+	ColPaths   [][]HeaderPart `json:"colPaths,omitempty"`
 }
 
 // axisCell pairs a rendered header with the dim it overlays onto the POV.
@@ -369,8 +390,13 @@ type axisCell struct {
 	dim    string
 }
 
-// Query expands the row/col axis specs, overlays each (row, col) member pair
-// onto the request POV, and resolves every cell via GetCell.
+// axisTuple is one position of a nested axis: one axisCell per nesting level,
+// outer→inner. A flat axis yields one-element tuples.
+type axisTuple []axisCell
+
+// Query expands the row/col axes (cross product of their nesting levels),
+// overlays each (row tuple, col tuple) onto the request POV, and resolves
+// every cell via GetCell.
 func (e *Engine) Query(meta *model.Metadata, req QueryRequest) (*QueryResult, error) {
 	base := req.POV
 	if req.Cube != "" {
@@ -381,27 +407,39 @@ func (e *Engine) Query(meta *model.Metadata, req QueryRequest) (*QueryResult, er
 			return nil, fmt.Errorf("query: %w", err)
 		}
 	}
-	rows, err := expandAxes(meta, req.Rows)
+	rowLevels := axisLevels(req.RowNest, req.Rows)
+	colLevels := axisLevels(req.ColNest, req.Cols)
+	rows, err := expandNested(meta, rowLevels)
 	if err != nil {
 		return nil, fmt.Errorf("rows: %w", err)
 	}
-	cols, err := expandAxes(meta, req.Cols)
+	cols, err := expandNested(meta, colLevels)
 	if err != nil {
 		return nil, fmt.Errorf("cols: %w", err)
 	}
 	res := &QueryResult{
-		RowHeaders: headersOf(rows),
-		ColHeaders: headersOf(cols),
+		RowHeaders: tupleHeaders(rows),
+		ColHeaders: tupleHeaders(cols),
 		Cells:      make([][]float64, len(rows)),
 		Issues:     []string{},
+	}
+	if len(rowLevels) > 1 {
+		res.RowPaths = tuplePaths(rows)
+	}
+	if len(colLevels) > 1 {
+		res.ColPaths = tuplePaths(cols)
 	}
 	ctx := newEvalCtx()
 	for i, r := range rows {
 		line := make([]float64, len(cols))
 		for j, c := range cols {
 			pov := base
-			applyAxis(&pov, r.dim, r.header.Name)
-			applyAxis(&pov, c.dim, c.header.Name)
+			for _, cell := range r {
+				applyAxis(&pov, cell.dim, cell.header.Name)
+			}
+			for _, cell := range c {
+				applyAxis(&pov, cell.dim, cell.header.Name)
+			}
 			line[j] = e.getCell(meta, pov, ctx)
 		}
 		res.Cells[i] = line
@@ -410,15 +448,70 @@ func (e *Engine) Query(meta *model.Metadata, req QueryRequest) (*QueryResult, er
 	return res, nil
 }
 
-func headersOf(cells []axisCell) []HeaderCell {
-	out := make([]HeaderCell, 0, len(cells))
-	for _, c := range cells {
-		out = append(out, c.header)
+// axisLevels picks the nested form when present, else wraps the flat specs as
+// a single level so both paths share one cross-product code path.
+func axisLevels(nest [][]AxisSpec, flat []AxisSpec) [][]AxisSpec {
+	if len(nest) > 0 {
+		return nest
+	}
+	return [][]AxisSpec{flat}
+}
+
+// tupleHeaders returns each tuple's innermost (most specific) header.
+func tupleHeaders(tuples []axisTuple) []HeaderCell {
+	out := make([]HeaderCell, 0, len(tuples))
+	for _, t := range tuples {
+		if len(t) == 0 {
+			out = append(out, HeaderCell{})
+			continue
+		}
+		out = append(out, t[len(t)-1].header)
 	}
 	return out
 }
 
-// expandAxes concatenates the expansions of every spec on one axis.
+// tuplePaths flattens each tuple into its outer→inner header parts.
+func tuplePaths(tuples []axisTuple) [][]HeaderPart {
+	out := make([][]HeaderPart, 0, len(tuples))
+	for _, t := range tuples {
+		parts := make([]HeaderPart, 0, len(t))
+		for _, c := range t {
+			parts = append(parts, HeaderPart{
+				Dim: c.dim, Name: c.header.Name, Depth: c.header.Depth, IsLeaf: c.header.IsLeaf,
+			})
+		}
+		out = append(out, parts)
+	}
+	return out
+}
+
+// expandNested expands an axis given as nesting levels (outer→inner) into the
+// cross product of the levels. Each level is a set of stacked specs
+// (expandAxes); an empty level collapses the whole axis to nothing.
+func expandNested(meta *model.Metadata, levels [][]AxisSpec) ([]axisTuple, error) {
+	tuples := []axisTuple{{}}
+	for i, level := range levels {
+		cells, err := expandAxes(meta, level)
+		if err != nil {
+			return nil, fmt.Errorf("level %d: %w", i, err)
+		}
+		if len(cells) == 0 {
+			return []axisTuple{}, nil
+		}
+		next := make([]axisTuple, 0, len(tuples)*len(cells))
+		for _, t := range tuples {
+			for _, c := range cells {
+				nt := make(axisTuple, len(t), len(t)+1)
+				copy(nt, t)
+				next = append(next, append(nt, c))
+			}
+		}
+		tuples = next
+	}
+	return tuples, nil
+}
+
+// expandAxes concatenates the expansions of every spec on one axis level.
 func expandAxes(meta *model.Metadata, specs []AxisSpec) ([]axisCell, error) {
 	out := []axisCell{}
 	for i, s := range specs {
