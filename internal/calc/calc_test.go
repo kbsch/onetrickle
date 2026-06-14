@@ -61,8 +61,8 @@ func TestParseEval(t *testing.T) {
 		{"div by zero literal", "1/0", nil, 0},
 		{"div by zero expression", "5/(2-2)", nil, 0},
 		{"div by negative zero", "-3/(1-1)", nil, 0},
-		{"div by tiny below eps", "7/0.0000000000001", nil, 0}, // 1e-13 < 1e-12
-		{"div by value above eps", "1/(2e-12)", nil, 5e11},
+		{"div by tiny nonzero divides normally", "7/0.0000000000001", nil, 7e13}, // 1e-13: small but nonzero ⇒ real division, only an exactly-zero divisor yields 0
+		{"div by small value", "1/(2e-12)", nil, 5e11},
 		{"div by zero ref", "A#X/A#Y", map[string]float64{"X": 9, "Y": 0}, 0},
 
 		// number literals

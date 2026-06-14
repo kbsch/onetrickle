@@ -46,10 +46,11 @@ Open <http://localhost:8080> in a browser.
 
 The seed builds cube **GolfTrickle** (USD group currency): GolfTrickle Inc →
 North America → {US Operations (USD), Canada (CAD)} and Europe → {Germany
-(EUR), France (EUR, 80% owned)}, with Actual data for 2025M1–M6, Budget for
-2025M1–M12, FX rates for all of 2025, an intercompany Sales/COGS pair between
-US Operations and Germany, and Actual 2025M1–M3 already consolidated. Three
-things to try:
+(EUR), France (EUR, 80% owned)}, with both Actual and Budget data for every
+month of 2024–2026 (scaled per year so the years differ), FX rates for all of
+those months, an intercompany Sales/COGS pair between US Operations and
+Germany, and every (scenario, month) slice already consolidated and walked to
+Processed. Three things to try:
 
 1. **Quick View** — set rows to Account / NetIncome / tree and cols to Time /
    2025Q1 / leaves with entity GolfTrickle Inc, stage Consolidated. You'll see
@@ -59,10 +60,10 @@ things to try:
    post to the IC accounts, which sit outside the NetIncome tree. Then switch
    the entity to Canada, stage to Local and Origin to Forms, and double-click
    a leaf cell to edit it.
-2. **Workflow** — pick Actual / 2025M4 (loaded but not yet processed): walk a
-   leaf entity through import → validate → process → certify, then try
-   writing to the certified unit from Quick View and watch the server refuse
-   it (409).
+2. **Workflow** — every leaf unit ships Processed. Pick any leaf entity (e.g.
+   Canada / Actual / 2025M4), **certify** it, then try writing to it from
+   Quick View and watch the server refuse the write (409); **reopen** it to
+   make it writable again.
 3. **Import** — on the Import page pick the "GolfTrickle CSV" profile and
    upload a CSV like the seed sample (entity, account like `4100`/`5xxx`,
    month, amount — the rules map `4100`→Sales and `5*`→COGS). Preview shows

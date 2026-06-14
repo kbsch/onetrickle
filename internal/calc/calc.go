@@ -15,10 +15,6 @@ import (
 // Resolver returns the value of an A# account reference during Eval.
 type Resolver func(account string) (float64, error)
 
-// divEps: a divisor whose absolute value is below this is treated as zero,
-// making the division yield 0 instead of ±Inf/NaN (CPM convention).
-const divEps = 1e-12
-
 type nodeKind uint8
 
 const (
@@ -28,7 +24,7 @@ const (
 	nAdd                  // args[0] + args[1]
 	nSub                  // args[0] - args[1]
 	nMul                  // args[0] * args[1]
-	nDiv                  // args[0] / args[1] (0 when divisor ≈ 0)
+	nDiv                  // args[0] / args[1] (0 when divisor is exactly 0)
 	nCmp                  // comparison; name = operator, args = [lhs, rhs]; only as IF's first argument
 	nCall                 // function call; name = ABS|MIN|MAX|IF, args = arguments
 )
@@ -81,8 +77,8 @@ func (e *Expr) Refs() []string {
 
 // Eval computes the expression's value, resolving each A# reference through
 // resolve. Resolver errors abort evaluation and are wrapped with the account
-// name. Division by (near-)zero yields 0. Only the taken IF branch is
-// evaluated.
+// name. Division by zero yields 0 (CPM convention). Only the taken IF branch
+// is evaluated.
 func (e *Expr) Eval(resolve Resolver) (float64, error) {
 	if e == nil || e.root == nil {
 		return 0, errors.New("calc: eval of nil expression")
@@ -126,7 +122,7 @@ func evalNode(nd *node, resolve Resolver) (float64, error) {
 		case nMul:
 			return a * b, nil
 		default: // nDiv
-			if math.Abs(b) < divEps {
+			if b == 0 {
 				return 0, nil
 			}
 			return a / b, nil

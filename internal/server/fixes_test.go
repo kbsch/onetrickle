@@ -239,7 +239,7 @@ func TestStoredFormulaLeafOnly(t *testing.T) {
 }
 
 // TestMetaLatestDataTime pins the /api/meta hint the UI uses to open on a
-// month that actually has data (seed: Budget runs through 2025M12).
+// month that actually has data (seed populates through 2026M12).
 func TestMetaLatestDataTime(t *testing.T) {
 	h, _, _ := newTestServer(t)
 	rec := doJSON(t, h, http.MethodGet, "/api/meta", nil)
@@ -247,8 +247,8 @@ func TestMetaLatestDataTime(t *testing.T) {
 	got := decodeBody[struct {
 		LatestDataTime string `json:"latestDataTime"`
 	}](t, rec)
-	if got.LatestDataTime != "2025M12" {
-		t.Errorf("latestDataTime = %q, want 2025M12", got.LatestDataTime)
+	if got.LatestDataTime != "2026M12" {
+		t.Errorf("latestDataTime = %q, want 2026M12", got.LatestDataTime)
 	}
 
 	// Empty store: hint is "".

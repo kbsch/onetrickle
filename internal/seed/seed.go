@@ -1,12 +1,13 @@
 // Package seed builds the GolfTrickle demo dataset described in SPEC §14:
 // metadata (cube, entity and account hierarchies, scenarios, time, FX rates),
-// Origin=Import input data for Actual 2025M1–M6 and Budget 2025M1–M12, and a
-// CSV import profile with transformation rules.
+// Origin=Import input data for both scenarios across every month of 2024,
+// 2025 and 2026, and a CSV import profile with transformation rules.
 //
-// Everything is a pure deterministic function of entity/month/scenario
+// Everything is a pure deterministic function of entity/year/month/scenario
 // indices — no randomness, no clock — so repeated Build calls produce
 // byte-identical JSON. The seed does NOT run consolidation; the CLI is
-// expected to run consol.Process (Actual 2025M1–M3) after seeding.
+// expected to run consol.Process for the seeded slices (see Slices) after
+// seeding.
 package seed
 
 import (
@@ -30,17 +31,61 @@ const (
 
 // Deterministic data-shape parameters.
 const (
-	dataYear     = 2025 // all input data and rates live in 2025
-	actualMonths = 6    // Actual is seeded 2025M1..M6
-	budgetMonths = 12   // Budget is seeded 2025M1..M12
 	budgetFactor = 1.05 // Budget amounts = Actual-like base × 1.05
 
 	// Intercompany pair: US Operations sells to Germany every seeded month.
-	icSalesBase   = 200.0 // USD, 2025M1
+	icSalesBase   = 200.0 // USD, month 1 of the 2025 baseline year
 	icSalesGrowth = 10.0  // USD per month
 	icEURRate     = 1.09  // matches the EUR Average base rate so the
 	// translated USD values roughly offset
 )
+
+// dataYears are the years seeded with input data and FX rates. 2025 is the
+// baseline; 2024/2026 amounts and rates are scaled/shifted off it (see
+// yearFactor and rateYearDrift) so the three years show distinct numbers.
+var dataYears = []int{2024, 2025, 2026}
+
+// yearFactor scales every amount by data year: 2024 ≈ 10% lighter, 2026 ≈ 10%
+// heavier than the 2025 baseline (factor 1.0). Holding 2025 at exactly 1.0
+// keeps the 2025 figures — including the documented gold consolidation
+// numbers — byte-identical to a single-year seed.
+func yearFactor(y int) float64 {
+	switch y {
+	case 2024:
+		return 0.90
+	case 2026:
+		return 1.10
+	default:
+		return 1.0
+	}
+}
+
+// rateYearDrift shifts FX rates by data year (2025 unchanged) so rates differ
+// across years as well as across months.
+func rateYearDrift(y int) float64 {
+	switch y {
+	case 2024:
+		return -0.02
+	case 2026:
+		return 0.02
+	default:
+		return 0
+	}
+}
+
+// Slices returns every (scenario, month) data slice the seed populates, in a
+// deterministic order. The CLI consolidates and workflow-processes each one.
+func Slices() []struct{ Scenario, Time string } {
+	var out []struct{ Scenario, Time string }
+	for _, sc := range []string{ScenarioActual, ScenarioBudget} {
+		for _, y := range dataYears {
+			for m := 1; m <= 12; m++ {
+				out = append(out, struct{ Scenario, Time string }{sc, model.TimeName(y, m)})
+			}
+		}
+	}
+	return out
+}
 
 // Build constructs the GolfTrickle demo: metadata, cell store and import
 // profiles. It is deterministic and never mutates package state.
@@ -123,9 +168,10 @@ func accountMembers() []*model.Member {
 	}
 }
 
-// addRates fills the rate table for all 12 months of 2025 in both scenarios:
-// CAD 0.74 avg / 0.73 close, EUR 1.09 avg / 1.08 close, each drifting by
-// +0.001 per month so months differ.
+// addRates fills the rate table for every month of every dataYear in both
+// scenarios: CAD 0.74 avg / 0.73 close, EUR 1.09 avg / 1.08 close at the 2025
+// baseline, drifting +0.001 per month (so months differ) and shifted per year
+// by rateYearDrift (so years differ).
 func addRates(rt model.RateTable) error {
 	bases := []struct {
 		currency string
@@ -138,12 +184,14 @@ func addRates(rt model.RateTable) error {
 		{"EUR", model.RateClosing, 1.08},
 	}
 	for _, sc := range []string{ScenarioActual, ScenarioBudget} {
-		for m := 1; m <= 12; m++ {
-			t := model.TimeName(dataYear, m)
-			drift := 0.001 * float64(m-1)
-			for _, b := range bases {
-				if err := rt.Set(sc, t, b.currency, b.typ, b.base+drift); err != nil {
-					return fmt.Errorf("seed: set rate %s/%s %s %s: %w", sc, t, b.currency, b.typ, err)
+		for _, y := range dataYears {
+			for m := 1; m <= 12; m++ {
+				t := model.TimeName(y, m)
+				drift := rateYearDrift(y) + 0.001*float64(m-1)
+				for _, b := range bases {
+					if err := rt.Set(sc, t, b.currency, b.typ, b.base+drift); err != nil {
+						return fmt.Errorf("seed: set rate %s/%s %s %s: %w", sc, t, b.currency, b.typ, err)
+					}
 				}
 			}
 		}
@@ -205,39 +253,43 @@ func baseCells(b entityBase, m int, factor float64) []cell {
 	}
 }
 
-// icSales returns the US Operations → Germany intercompany sale for a month
-// (USD). The Germany COGS counterpart is the same amount divided by the EUR
-// base rate, rounded to 2 decimals (local EUR).
+// icSales returns the baseline US Operations → Germany intercompany sale for
+// month m (USD, 2025 scale); callers scale it by yearFactor. The Germany COGS
+// counterpart is this amount divided by the EUR base rate (local EUR).
 func icSales(m int) float64 { return icSalesBase + icSalesGrowth*float64(m-1) }
 
-// buildStore writes the Origin=Import input data for every leaf entity:
-// Actual 2025M1..M6 and Budget 2025M1..M12, plus the IC pair each month.
+// buildStore writes the Origin=Import input data for every leaf entity across
+// both scenarios and every month of every dataYear (2024/2025/2026), plus the
+// US Operations → Germany IC pair each month. Amounts are scaled by scenario
+// (Budget = ×budgetFactor) and by year (yearFactor).
 func buildStore() *cube.Store {
 	store := cube.NewStore()
 	scenarios := []struct {
 		name   string
-		months int
 		factor float64
 	}{
-		{ScenarioActual, actualMonths, 1.0},
-		{ScenarioBudget, budgetMonths, budgetFactor},
+		{ScenarioActual, 1.0},
+		{ScenarioBudget, budgetFactor},
 	}
 	for _, sc := range scenarios {
-		for m := 1; m <= sc.months; m++ {
-			t := model.TimeName(dataYear, m)
-			for _, b := range entityBases() {
-				uk := cube.UnitKey{Cube: CubeName, Entity: b.name, Scenario: sc.name, Time: t}
-				u := store.Ensure(uk)
-				for _, c := range baseCells(b, m, sc.factor) {
-					u.Input[importCoord(c.account, "")] = c.value
+		for _, y := range dataYears {
+			yf := yearFactor(y)
+			for m := 1; m <= 12; m++ {
+				t := model.TimeName(y, m)
+				for _, b := range entityBases() {
+					uk := cube.UnitKey{Cube: CubeName, Entity: b.name, Scenario: sc.name, Time: t}
+					u := store.Ensure(uk)
+					for _, c := range baseCells(b, m, sc.factor*yf) {
+						u.Input[importCoord(c.account, "")] = c.value
+					}
 				}
+				// Intercompany pair: US Operations sells to Germany.
+				usd := round2(icSales(m) * yf)
+				us := cube.UnitKey{Cube: CubeName, Entity: "US Operations", Scenario: sc.name, Time: t}
+				store.Ensure(us).Input[importCoord("Sales", "Germany")] = usd
+				de := cube.UnitKey{Cube: CubeName, Entity: "Germany", Scenario: sc.name, Time: t}
+				store.Ensure(de).Input[importCoord("COGS", "US Operations")] = round2(usd / icEURRate)
 			}
-			// Intercompany pair: US Operations sells to Germany.
-			usd := icSales(m)
-			us := cube.UnitKey{Cube: CubeName, Entity: "US Operations", Scenario: sc.name, Time: t}
-			store.Ensure(us).Input[importCoord("Sales", "Germany")] = usd
-			de := cube.UnitKey{Cube: CubeName, Entity: "Germany", Scenario: sc.name, Time: t}
-			store.Ensure(de).Input[importCoord("COGS", "US Operations")] = round2(usd / icEURRate)
 		}
 	}
 	return store

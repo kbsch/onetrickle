@@ -70,10 +70,29 @@ const NoneMember = "None"
 
 var memberNameRE = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9 ._\-]*$`)
 
-// ValidMemberName reports whether s is a legal member name.
+// ValidMemberName reports whether s is a legal member name. Beyond the
+// character regex, a name must round-trip as a calc A# formula reference
+// (SPEC §6): it may not end in a space, and every hyphen must be tightly
+// bound between name-word characters (letters, digits, '.' or '_') — no
+// leading, trailing or space-adjacent hyphen. Otherwise the A# ref lexer
+// would read a different or truncated name, leaving a valid member that no
+// formula could reference.
 func ValidMemberName(s string) error {
 	if !memberNameRE.MatchString(s) {
 		return fmt.Errorf("invalid member name %q: must match %s", s, memberNameRE.String())
+	}
+	// The leading-[A-Za-z0-9] anchor already guarantees s is non-empty and
+	// starts with a name-word char (so no leading hyphen/space).
+	if s[len(s)-1] == ' ' {
+		return fmt.Errorf("invalid member name %q: must not end with a space", s)
+	}
+	for i := 0; i < len(s); i++ {
+		if s[i] != '-' {
+			continue
+		}
+		if i == 0 || i == len(s)-1 || s[i-1] == ' ' || s[i+1] == ' ' {
+			return fmt.Errorf("invalid member name %q: a hyphen must sit between letters, digits, '.' or '_' so the name is usable as a calc A# reference", s)
+		}
 	}
 	return nil
 }

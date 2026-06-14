@@ -206,24 +206,31 @@ func TestRatesComplete(t *testing.T) {
 		{"EUR", model.RateAverage, 1.09},
 		{"EUR", model.RateClosing, 1.08},
 	}
+	yearDrift := map[int]float64{2024: -0.02, 2025: 0, 2026: 0.02}
 	for _, sc := range []string{ScenarioActual, ScenarioBudget} {
-		for m := 1; m <= 12; m++ {
-			tm := model.TimeName(2025, m)
-			for _, b := range bases {
-				v, ok := meta.Rates.Get(sc, tm, b.currency, b.typ)
-				if !ok {
-					t.Errorf("missing rate %s/%s %s %s", sc, tm, b.currency, b.typ)
-					continue
-				}
-				want := b.base + 0.001*float64(m-1)
-				if !almostEq(v, want) {
-					t.Errorf("rate %s/%s %s %s = %v, want %v", sc, tm, b.currency, b.typ, v, want)
+		for _, y := range []int{2024, 2025, 2026} {
+			for m := 1; m <= 12; m++ {
+				tm := model.TimeName(y, m)
+				for _, b := range bases {
+					v, ok := meta.Rates.Get(sc, tm, b.currency, b.typ)
+					if !ok {
+						t.Errorf("missing rate %s/%s %s %s", sc, tm, b.currency, b.typ)
+						continue
+					}
+					want := b.base + yearDrift[y] + 0.001*float64(m-1)
+					if !almostEq(v, want) {
+						t.Errorf("rate %s/%s %s %s = %v, want %v", sc, tm, b.currency, b.typ, v, want)
+					}
 				}
 			}
 		}
 	}
-	if got := len(meta.Rates); got != 96 {
-		t.Errorf("rate entries = %d, want 96 (2 scenarios × 12 months × 2 currencies × 2 types)", got)
+	if got := len(meta.Rates); got != 288 {
+		t.Errorf("rate entries = %d, want 288 (2 scenarios × 36 months × 2 currencies × 2 types)", got)
+	}
+	// 2025 baseline preserved exactly.
+	if v, _ := meta.Rates.Get(ScenarioActual, "2025M1", "EUR", model.RateAverage); !almostEq(v, 1.09) {
+		t.Errorf("EUR Average Actual 2025M1 = %v, want 1.09 (baseline)", v)
 	}
 	// Months must differ (drift).
 	v1, _ := meta.Rates.Get(ScenarioActual, "2025M1", "EUR", model.RateAverage)
@@ -290,37 +297,28 @@ func TestInputCellsReferenceValidLeaves(t *testing.T) {
 			}
 		}
 	}
-	// 4 leaf entities × (6 Actual + 12 Budget) months.
-	if got := len(store.Units); got != 72 {
-		t.Errorf("unit count = %d, want 72", got)
+	// 4 leaf entities × 2 scenarios × 36 months.
+	if got := len(store.Units); got != 288 {
+		t.Errorf("unit count = %d, want 288", got)
 	}
-	// 72 units × 8 base cells + 18 scenario-months × 2 IC cells.
-	if totalCells != 612 {
-		t.Errorf("total input cells = %d, want 612", totalCells)
+	// 288 units × 8 base cells + 72 scenario-months × 2 IC cells.
+	if totalCells != 2448 {
+		t.Errorf("total input cells = %d, want 2448", totalCells)
 	}
 }
 
 func TestSeededMonthsPerScenario(t *testing.T) {
 	_, store, _ := mustBuild(t)
 	entities := []string{"US Operations", "Canada", "Germany", "France"}
-	scenarios := []struct {
-		name   string
-		months int
-	}{
-		{ScenarioActual, 6},
-		{ScenarioBudget, 12},
-	}
-	for _, sc := range scenarios {
-		for _, e := range entities {
+	for _, sc := range []string{ScenarioActual, ScenarioBudget} {
+		for _, y := range []int{2024, 2025, 2026} {
 			for m := 1; m <= 12; m++ {
-				uk := cube.UnitKey{Cube: CubeName, Entity: e, Scenario: sc.name, Time: model.TimeName(2025, m)}
-				u := store.Unit(uk)
-				if m <= sc.months {
+				for _, e := range entities {
+					uk := cube.UnitKey{Cube: CubeName, Entity: e, Scenario: sc, Time: model.TimeName(y, m)}
+					u := store.Unit(uk)
 					if u == nil || len(u.Input) == 0 {
 						t.Errorf("missing unit data for %s", uk.Key())
 					}
-				} else if u != nil {
-					t.Errorf("unexpected unit %s beyond seeded months", uk.Key())
 				}
 			}
 		}
@@ -339,6 +337,10 @@ func TestSpotAmounts(t *testing.T) {
 		{"US Operations", "Actual", "2025M1", "Cash", 5000},
 		{"US Operations", "Actual", "2025M4", "Cash", 5300},
 		{"US Operations", "Budget", "2025M1", "Sales", 1050},
+		// Year scaling: 2024 ×0.90, 2026 ×1.10 off the 2025 baseline.
+		{"US Operations", "Actual", "2024M1", "Sales", 900},
+		{"US Operations", "Actual", "2026M1", "Sales", 1100},
+		{"Germany", "Budget", "2026M1", "Sales", 981.75},
 		{"Canada", "Actual", "2025M1", "Sales", 600},
 		{"Canada", "Actual", "2025M2", "Salaries", 143},
 		{"Canada", "Actual", "2025M2", "Rent", 30},
@@ -380,43 +382,39 @@ func TestCOGSRatio(t *testing.T) {
 
 func TestICPairAllMonths(t *testing.T) {
 	_, store, _ := mustBuild(t)
-	scenarios := []struct {
-		name   string
-		months int
-	}{
-		{ScenarioActual, 6},
-		{ScenarioBudget, 12},
-	}
-	for _, sc := range scenarios {
-		for m := 1; m <= sc.months; m++ {
-			tm := model.TimeName(2025, m)
-			wantUSD := 200 + 10*float64(m-1)
-			wantEUR := math.Round(wantUSD/1.09*100) / 100
+	yf := map[int]float64{2024: 0.90, 2025: 1.0, 2026: 1.10}
+	for _, sc := range []string{ScenarioActual, ScenarioBudget} {
+		for _, y := range []int{2024, 2025, 2026} {
+			for m := 1; m <= 12; m++ {
+				tm := model.TimeName(y, m)
+				wantUSD := math.Round((200+10*float64(m-1))*yf[y]*100) / 100
+				wantEUR := math.Round(wantUSD/1.09*100) / 100
 
-			us := store.Unit(cube.UnitKey{Cube: CubeName, Entity: "US Operations", Scenario: sc.name, Time: tm})
-			if us == nil {
-				t.Fatalf("%s/%s: US Operations unit missing", sc.name, tm)
-			}
-			got, ok := us.Input[importCoord("Sales", "Germany")]
-			if !ok {
-				t.Errorf("%s/%s: missing US Operations Sales[IC=Germany]", sc.name, tm)
-			} else if !almostEq(got, wantUSD) {
-				t.Errorf("%s/%s: Sales[IC=Germany] = %v, want %v", sc.name, tm, got, wantUSD)
-			}
+				us := store.Unit(cube.UnitKey{Cube: CubeName, Entity: "US Operations", Scenario: sc, Time: tm})
+				if us == nil {
+					t.Fatalf("%s/%s: US Operations unit missing", sc, tm)
+				}
+				got, ok := us.Input[importCoord("Sales", "Germany")]
+				if !ok {
+					t.Errorf("%s/%s: missing US Operations Sales[IC=Germany]", sc, tm)
+				} else if !almostEq(got, wantUSD) {
+					t.Errorf("%s/%s: Sales[IC=Germany] = %v, want %v", sc, tm, got, wantUSD)
+				}
 
-			de := store.Unit(cube.UnitKey{Cube: CubeName, Entity: "Germany", Scenario: sc.name, Time: tm})
-			if de == nil {
-				t.Fatalf("%s/%s: Germany unit missing", sc.name, tm)
-			}
-			got, ok = de.Input[importCoord("COGS", "US Operations")]
-			if !ok {
-				t.Errorf("%s/%s: missing Germany COGS[IC=US Operations]", sc.name, tm)
-			} else if !almostEq(got, wantEUR) {
-				t.Errorf("%s/%s: COGS[IC=US Operations] = %v, want %v", sc.name, tm, got, wantEUR)
+				de := store.Unit(cube.UnitKey{Cube: CubeName, Entity: "Germany", Scenario: sc, Time: tm})
+				if de == nil {
+					t.Fatalf("%s/%s: Germany unit missing", sc, tm)
+				}
+				got, ok = de.Input[importCoord("COGS", "US Operations")]
+				if !ok {
+					t.Errorf("%s/%s: missing Germany COGS[IC=US Operations]", sc, tm)
+				} else if !almostEq(got, wantEUR) {
+					t.Errorf("%s/%s: COGS[IC=US Operations] = %v, want %v", sc, tm, got, wantEUR)
+				}
 			}
 		}
 	}
-	// Spot-check the exact rounded EUR value for month 1: 200/1.09 = 183.49.
+	// Spot-check the exact rounded EUR value for baseline 2025M1: 200/1.09 = 183.49.
 	de := store.Unit(cube.UnitKey{Cube: CubeName, Entity: "Germany", Scenario: ScenarioActual, Time: "2025M1"})
 	if got := de.Input[importCoord("COGS", "US Operations")]; !almostEq(got, 183.49) {
 		t.Errorf("Germany COGS[IC=US Operations] 2025M1 = %v, want 183.49", got)

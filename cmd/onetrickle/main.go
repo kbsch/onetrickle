@@ -21,7 +21,6 @@ import (
 	"time"
 
 	"onetrickle/internal/consol"
-	"onetrickle/internal/model"
 	"onetrickle/internal/seed"
 	"onetrickle/internal/server"
 	"onetrickle/internal/store"
@@ -55,9 +54,10 @@ func main() {
 	}
 }
 
-// runSeed builds the GolfTrickle demo, consolidates Actual 2025M1–M3, walks
-// each leaf entity's workflow to Processed for those months and saves the
-// snapshot. It refuses to overwrite an existing snapshot.
+// runSeed builds the GolfTrickle demo, consolidates every seeded (scenario,
+// month) slice, walks each leaf entity's workflow to Processed for all of
+// them and saves the snapshot. No unit is certified. It refuses to overwrite
+// an existing snapshot.
 func runSeed(path string) error {
 	if _, err := os.Stat(path); err == nil {
 		return fmt.Errorf("snapshot %s already exists; refusing to overwrite (delete it or use another -data directory)", path)
@@ -78,23 +78,23 @@ func runSeed(path string) error {
 	}
 
 	now := time.Now().UTC()
-	totalCells, totalIssues := 0, 0
-	for m := 1; m <= 3; m++ {
-		month := model.TimeName(2025, m)
-		res, err := consol.Process(meta, cells, seed.CubeName, seed.ScenarioActual, month)
+	totalCells, totalIssues, processed := 0, 0, 0
+	for _, slice := range seed.Slices() {
+		res, err := consol.Process(meta, cells, seed.CubeName, slice.Scenario, slice.Time)
 		if err != nil {
-			return fmt.Errorf("process %s %s/%s: %w", seed.CubeName, seed.ScenarioActual, month, err)
+			return fmt.Errorf("process %s %s/%s: %w", seed.CubeName, slice.Scenario, slice.Time, err)
 		}
 		totalCells += res.CellsWritten
 		totalIssues += len(res.Issues)
 		for _, ent := range leaves {
-			k := workflow.Key{Cube: seed.CubeName, Entity: ent, Scenario: seed.ScenarioActual, Time: month}
+			k := workflow.Key{Cube: seed.CubeName, Entity: ent, Scenario: slice.Scenario, Time: slice.Time}
 			for _, action := range []string{workflow.ActionImport, workflow.ActionValidate, workflow.ActionProcess} {
 				if _, err := st.Workflow.Apply(k, action, "seed", now); err != nil {
 					return fmt.Errorf("workflow %s on %s: %w", action, k.Key(), err)
 				}
 			}
 		}
+		processed++
 	}
 
 	if err := store.Save(path, st); err != nil {
@@ -103,8 +103,8 @@ func runSeed(path string) error {
 	fmt.Printf("Seeded the %s demo to %s\n", seed.CubeName, path)
 	fmt.Printf("  data units: %d, import profiles: %d, workflow entries: %d\n",
 		len(st.Cells.Units), len(st.Profiles), len(st.Workflow.Entries))
-	fmt.Printf("  consolidated %s 2025M1..2025M3: %d cells written, %d issues\n",
-		seed.ScenarioActual, totalCells, totalIssues)
+	fmt.Printf("  consolidated %d slices (both scenarios, 2024–2026): %d cells written, %d issues\n",
+		processed, totalCells, totalIssues)
 	return nil
 }
 

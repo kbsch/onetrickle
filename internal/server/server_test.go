@@ -273,7 +273,9 @@ func TestDataCellsWriteRead(t *testing.T) {
 		[]cube.CellWrite{{Unit: unit, Coord: coord, Value: 123.45}})
 	wantStatus(t, rec, http.StatusOK)
 
-	pov := cube.POV{Cube: unit.Cube, Entity: unit.Entity, Scenario: unit.Scenario, Time: unit.Time, Stage: "Local"}
+	// Read back the Forms origin specifically: the seed now populates every
+	// slice (Origin=Import), so isolate the user write under test.
+	pov := cube.POV{Cube: unit.Cube, Entity: unit.Entity, Scenario: unit.Scenario, Time: unit.Time, Stage: "Local", Origin: "Forms"}
 	if got := querySingle(t, h, pov, "Sales"); !approx(got, 123.45) {
 		t.Errorf("read back = %v, want 123.45", got)
 	}

@@ -36,8 +36,11 @@ fix one of them — never let them drift silently.
 | UD1..UD4  | user         | trees, each must contain root `None` (default) |
 
 Member names: must match `^[A-Za-z0-9][A-Za-z0-9 ._\-]*$` (in particular no
-`|` or `#`), unique within their dimension. Single-parent hierarchies only
-(no shared/alternate hierarchies in MVP).
+`|` or `#`) and must additionally be referenceable as a calc `A#` reference
+(§6): no trailing space, and every hyphen tightly bound between name-word
+characters (letters, digits, `.` or `_`) — i.e. no leading, trailing or
+space-adjacent hyphen. Names are unique within their dimension. Single-parent
+hierarchies only (no shared/alternate hierarchies in MVP).
 
 ### Account types
 
@@ -207,7 +210,7 @@ Grammar (float64 semantics):
 expr   := term (('+'|'-') term)*
 term   := factor (('*'|'/') factor)*
 factor := NUMBER | REF | FUNC '(' expr (',' expr)* ')' | '(' expr ')' | '-' factor
-REF    := 'A#' MemberName        (MemberName may contain spaces/dots; ends before an operator/paren/comma)
+REF    := 'A#' MemberName        (MemberName may contain interior spaces, dots and tightly-bound hyphens; ends before an operator/paren/comma)
 FUNC   := ABS | MIN | MAX | IF
 cond (only inside IF's first arg) := expr ('<'|'<='|'>'|'>='|'=='|'!=') expr
 ```
@@ -372,10 +375,14 @@ GrossProfit (stored calc `A#Sales - A#COGS`); Sales(Revenue, IsIC),
 COGS(Expense, IsIC), OpEx(Expense) → {Salaries, Marketing, Rent};
 BalanceSheet → Cash(Asset), Receivables(Asset), Payables(Liability);
 GPMargin (DynamicCalc `IF(A#Sales == 0, 0, A#GrossProfit / A#Sales * 100)`,
-NonFinancial). Scenarios: Actual, Budget. Time: 2024–2026. Rates for all 2025
-months (CAD ≈ 0.74 avg / 0.73 close, EUR ≈ 1.09 avg / 1.08 close, slight
-monthly drift). Data: Actual 2025M1–M6 and Budget 2025M1–M12 for all leaf
-entities with plausible amounts, including an IC pair: US Operations
-Sales[IC=Germany] and Germany COGS[IC=US Operations] each month. Canada
-ownership 100%, France 80%. Seed runs Process for Actual 2025M1–M3 so the UI
-shows consolidated numbers immediately.
+NonFinancial). Scenarios: Actual, Budget. Time: 2024–2026. Rates for every
+month of 2024–2026 (CAD ≈ 0.74 avg / 0.73 close, EUR ≈ 1.09 avg / 1.08 close
+at the 2025 baseline, with slight monthly drift and a per-year shift). Data:
+both Actual and Budget for every month of 2024, 2025 and 2026 for all leaf
+entities, scaled per year (2024 ≈ 0.9×, 2026 ≈ 1.1× the 2025 baseline so the
+years differ), including an IC pair each month: US Operations Sales[IC=Germany]
+and Germany COGS[IC=US Operations]. Canada ownership 100%, France 80%. The 2025
+figures are exactly the single-year baseline, so the gold consolidation numbers
+still hold. Seed consolidates every (scenario, month) slice and walks each leaf
+entity's workflow to Processed — every period shows consolidated numbers
+immediately and no unit is certified.
